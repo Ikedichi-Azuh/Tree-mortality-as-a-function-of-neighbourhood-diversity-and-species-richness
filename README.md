@@ -1,2 +1,5 @@
 # Tree-mortality-as-a-function-of-neighbourhood-diversity-and-species-richness
-Tree mortality can result from factors like droughts and insect infestations. Using data from the IDENT experiment, we analyzed how basal area, tree height, species richness, tree origin, and competition index affect mortality, applying a flexible parametric survival model to assess biodiversity impacts.
+
+Tree mortality could be the result of many factors including droughts and insect infestations. The IDENT (International Diversity Experiment Network with Trees) experiment, enables the examination of the the biodiversity underlying tree mortality. In this study, we analyzed the effects of basal area, tree height, species richness, tree origin, and competition index on tree mortality using a flexible parametric survival model.
+
+Our results provide insights into how these factors interact over time to influence survival, highlighting both direct and interactive effects. The findings highlight the complexity of the mortality drivers and suggest that survival outcomes are not governed by a single factor, but rather by the interplay of multiple ecological forces. The findings align with previous research in some aspects while offering new perspectives in others, emphasizing the importance of species identity, competitive interactions, and tree size in survival dynamics.
