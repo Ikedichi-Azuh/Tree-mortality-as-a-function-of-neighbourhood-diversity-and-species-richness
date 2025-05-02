@@ -1,0 +1,757 @@
+---
+title: "Ident Data Cleaning"
+author: "Ikedichi Edward Azuh"
+format:
+ # html:
+  #  toc: true
+  #  toc-depth: 2
+  #  number-sections: true
+  #  theme: cosmo
+  #  df-print: paged
+   pdf:
+    #fig-width: 4
+    #fig-height: 4.3
+    fig-align: center
+    fig-show: 'hold'
+number-sections: true
+toc: false
+#editor: source
+geometry:
+  - top=20mm
+  - left=20mm
+  - bottom=20mm
+  - right=20mm
+mainfont: "Times New Roman" 
+monofont: "Courier New"      
+monofontoptions: 
+  - Scale=0.8
+execute: 
+  cache: true
+knitr:
+  opts_chunk:
+    tidy: false
+
+params:
+  hide_answers: false
+---
+
+```{r setup, echo=FALSE}
+options(dplyr.summarise.inform = FALSE, ggplot2.verbose = FALSE)
+```
+
+\frenchspacing
+
+# DATA Pre-processing and cleaning
+
+## Import datasets
+
+### Main data
+
+```{r}
+#| echo: false
+#| eval: true
+#| warning: false
+#| message: false
+
+library(readxl)
+library(dplyr)
+library(readr)
+
+file_path1 <- "IDENT_2014-2022_sent.xlsx"   # 2014-2022 data
+file_path2 <-"Aufnahmebögen_IDENT_2024_Block1-4_Dateneingabe_final - sent.xlsx"   # 2023 data
+
+df_2014_2022 <- read_excel(file_path1, sheet = 2, na = c("", "NA", "-"))
+df_2023 <- read_excel(file_path2, sheet = 2, na = c("", "NA", "-"))
+
+head(df_2014_2022)
+head(df_2023)
+```
+
+
+### UTM coordinates data
+
+```{r}
+
+utm_df <- read_excel("IDENT_treeCoords_UTM2.xlsx")
+```
+
+
+
+# Create a unique identifier "Tree_CN" needed to merge both dataframes
+
+The merged dataframe is our starting raw data.
+
+```{r}
+df_2023$Tree <- gsub("\\.", ",", df_2023$Tree) # replace "." with ","
+df_2023$Tree_CN <- paste("I", df_2023$Block, df_2023$Plot, df_2023$Tree, sep = ",")
+
+
+# Rename some columns to match what we had in 2014-2022 data
+df_2023 <- df_2023 %>%
+  rename(Diameter_1 = D1, Diameter_2 = D2,Diameter_3 = D3,
+         Height_1 = H1, Height_2 = H2, Height_3 = H3,
+         Comments = Comment,
+         Tree_Species = Species)
+
+######################
+# add columns DBH1, DBH2 and DBH3 from df_2023 to df_2014_2022
+df1 <- df_2014_2022 %>%
+  left_join(df_2023 %>%
+              dplyr::select(Tree_CN, DBH1, DBH2, DBH3), 
+            by = "Tree_CN")
+df1$DBH1 <- NA
+df1$DBH2 <- NA
+df1$DBH3 <- NA
+
+# also add missign columns in df_2023 from df_2014_2022
+df2 <- df_2023 %>%
+  left_join(df_2014_2022 %>%
+              dplyr::select(Tree_CN, Plot_CN, X_Pos, Y_Pos, Fertilizer, Species_Composition), 
+            by = "Tree_CN") %>%
+  distinct(Tree_CN, .keep_all = TRUE)
+
+
+# Combine df1 and df2a
+merged_df <- rbind(df1, df2)
+
+
+raw_df <- merged_df %>%
+  # Convert all character columns to factors
+  mutate(across(where(is.character), as.factor)) %>%
+  
+  # Explicitly ensure that 'Plot' and 'Block' are factors
+  mutate(
+    Plot = as.factor(Plot),
+    Block = as.factor(Block),
+    DBH1 = as.numeric(DBH1)
+    )
+  
+
+str(raw_df)
+
+```
+
+
+# Data cleaning
+
+## keep inner 5by5 of the plots
+
+By removing rows where X = 1 or X = 7, and Y = 1 or Y = 7.
+
+```{r}
+
+raw_df2 <- raw_df %>%
+  filter(!(X_Pos %in% c(1, 7) | Y_Pos %in% c(1, 7)))
+
+
+```
+
+## Create a simpler unique ID for each Tree using Tree_CN
+
+Sort by Plot, Tree_CN, and Year and generate Tree_ID as a factor using match() and unique() functions.
+
+```{r}
+raw_df3 <- raw_df2 %>%
+  arrange(Plot, Tree_CN, Year) %>%  # Sort 
+  mutate(Tree_ID = as.factor(match(Tree_CN, unique(Tree_CN))))  # Generate Tree_ID 
+
+
+```
+
+Total number of unique Tree_IDs
+
+```{r}
+
+n_distinct(raw_df3$Tree_ID)
+
+```
+
+## Update Height and Diameter
+
+Correct for record error due to height1 and height2 swaps during measurement.
+
+```{r}
+
+####################################
+raw_df4 <- raw_df3 %>%
+  # Group by Tree_ID to apply changes within each group
+  group_by(Tree_ID) %>%
+  mutate(
+    # Update Height with Height_2 if Height_2 is greater than Height_1
+    Height = ifelse(!is.na(Height_2) & Height_2 > Height_1, Height_2, Height_1),
+    
+    # Update Diameter with Diameter_2 if Diameter_2 is greater than Diameter_1
+    Diameter = ifelse(!is.na(Diameter_2) & Diameter_2 > Diameter_1, Diameter_2,
+                      Diameter_1),
+    
+  ) %>%
+  # Remove grouping
+  ungroup() %>%
+  # Unselect columns like Height_1, Height_2, Diameter_1, etc.
+  dplyr::select(-Height_1, -Height_2, -Height_3, -Diameter_1, -Diameter_2, -Diameter_3,
+         -Comments, -Tree)
+
+
+```
+
+## Predict Height measures for Trees where only Diameter was available
+
+Especially for 2023.
+
+```{r}
+
+raw_df4a <- raw_df4
+
+# Use only rows where Height is NOT NA (Diameter can be NA)
+model_data <- raw_df4a[!is.na(raw_df4a$Height), ]
+
+# Fit a linear model (Height ~ Diameter)
+hei_fit <- lm(Height ~ Diameter, data = model_data)
+summary(hei_fit)  # Check model output
+
+# Select rows where Height is missing but Diameter is available for prediction
+diam_rows <- raw_df4a[is.na(raw_df4a$Height) & !is.na(raw_df4a$Diameter), ]
+
+# Fill NAs with Predicted missing Height using the model
+raw_df4a$Height[is.na(raw_df4a$Height) & !is.na(raw_df4a$Diameter)] <- predict(hei_fit, newdata=diam_rows)
+
+# Check if NAs are replaced
+sum(is.na(raw_df4$Height)) # NAs not replaced here
+sum(is.na(raw_df4a$Height))  # Should be less than before
+
+```
+
+## Now do same for tree where only Height is available
+
+To estimate their corresponding Diameter.
+
+```{r}
+
+
+#####################################################
+
+raw_df4b <- raw_df4a
+
+# Use only rows where Diameter is NOT NA (Height can be NA)
+model_data <- raw_df4b[!is.na(raw_df4b$Diameter), ]
+
+# Fit a linear model 
+dia_fit <- lm(Diameter ~ Height, data = model_data)
+summary(dia_fit)  # Check model output
+
+# Select rows where Diameter is missing but Height is available
+hei_rows <- raw_df4b[is.na(raw_df4b$Diameter) & !is.na(raw_df4b$Height), ]
+
+# Predict missing Diameter using the model
+raw_df4b$Diameter[is.na(raw_df4b$Diameter) & !is.na(raw_df4b$Height)] <- predict(dia_fit, newdata=hei_rows)
+
+# Check if NAs are replaced
+sum(is.na(raw_df4a$Diameter)) # NAs not replaced here
+sum(is.na(raw_df4b$Diameter))  # Should be less than before
+
+```
+
+## More on missing values
+
+Replace "NA" with average of previous and next values if available.
+
+```{r}
+
+raw_df4c <- raw_df4b %>%
+  # Group by Tree_ID to apply changes within each group
+  group_by(Tree_ID) %>%
+  mutate(
+    
+# Handle missing Height values (replace with average of previous and next values)
+    Height = ifelse(is.na(Height), 
+                (lag(Height, order_by = Year) + lead(Height, order_by = Year))/2, 
+                 Height),
+    
+  # Handle missing Diameter values (replace with ave. of previous and next values)
+    Diameter = ifelse(is.na(Diameter), 
+              (lag(Diameter, order_by = Year) + lead(Diameter, order_by = Year))/2, 
+                Diameter)
+                      
+  ) %>%
+  # Remove grouping
+  ungroup()     
+
+sum(is.na(raw_df4b$Height)) # NAs not replaced here
+sum(is.na(raw_df4c$Height))  # Should be less than before
+```
+
+## Function to replace values after consecutive NAs with NA
+
+```{r}
+
+# Replace values that followed two or more consecutive 
+update_na_values <- function(group) {
+  n <- nrow(group)
+  heights <- group$Height
+  diameters <- group$Diameter
+  
+  # Find positions of NAs in Height
+  na_positions <- which(is.na(heights))
+  
+  if (length(na_positions) == 0 || length(na_positions) == n) {
+    return(group)  # No NA or all NA, return unchanged
+  }
+  
+  # Iterate through the positions of NAs
+  for (i in seq_along(na_positions)) {
+    pos <- na_positions[i]
+    
+    if (pos > 1 && pos < n) {  # Ensure it's between values
+      prev_value <- heights[pos - 1]
+      next_pos <- pos
+      
+      # Move forward to find the end of the NA sequence
+      while (next_pos < n && is.na(heights[next_pos])) {
+        next_pos <- next_pos + 1
+      }
+      
+# If next value is non-NA and the previous value is also non-NA, then we have a bounded NA sequence
+      if (next_pos <= n && !is.na(heights[next_pos]) && !is.na(prev_value)) {
+        # Replace all values after the NA sequence with NA in both Height and Diameter
+        heights[next_pos:n] <- NA
+        diameters[next_pos:n] <- NA
+        break  # Stop after first bounded sequence
+      }
+    }
+  }
+  
+  group$Height <- heights
+  group$Diameter <- diameters
+  return(group)
+}
+
+# Apply function to each group of Tree_ID
+raw_df5 <- raw_df4c %>%
+  group_by(Tree_ID) %>%
+  group_modify(~ update_na_values(.x)) %>%
+  ungroup()
+
+```
+
+## Create "Status" column using the following conditions:
+
+If for a tree:
+
+1.  Only first 2 years have values \~ "D"
+2.  Only first year has value \~ "C"
+3.  Only second, third, or fourth year has a value \~ "Delete"
+4.  All entries are NAs \~ "Delete"
+5.  Maximum year is NA \~ "D"
+6.  Maximum year has values \~ "A"
+
+```{r}
+
+library(dplyr)
+
+raw_df6 <- raw_df5 %>%
+  arrange(Tree_ID, Year) %>%
+  group_by(Tree_ID) %>%
+  mutate(
+    # Count non-NA values for each ID
+  non_na_count = sum(!is.na(Height)),
+    
+    # Find years where measurements exist (store as a list)
+  years_with_values = list(Year[!is.na(Height)]),
+    
+    # Identify first and last years with measurements safely
+  first_year = ifelse(length(years_with_values[[1]]) > 0, min(years_with_values[[1]], na.rm = TRUE), NA),
+  last_year = ifelse(length(years_with_values[[1]]) > 0, max(years_with_values[[1]], na.rm = TRUE), NA),
+    
+    # Identify if only the first two years (2014, 2015) have data
+  first_two_only = length(years_with_values[[1]]) == 2 && all(years_with_values[[1]] %in% c(2014, 2015)),
+    
+    
+    # Assign Status based on conditions **without creating extra columns**
+  Status = case_when(
+    non_na_count == 0 ~ "Delete",  # All values are NA
+    non_na_count == 1 & first_year %in% c(2015, 2016, 2017, 2018) ~ "Delete",  # Only 2/3/4th year
+    non_na_count == 1 & first_year == 2014 ~ "C",                         # Only 1st year has value
+    first_two_only ~ "D",                           # Only first two years (2014, 2015) have values
+    last_year == 2023 ~ "A",                               # If last year has values, Status is "A"
+    last_year < 2023 ~ "D",          # If max year is NA or missing data before 2023, Status is "D"
+    TRUE ~ NA_character_             # Default case
+    )  %>%
+      as.factor()                    # Convert to factor within mutate
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-non_na_count, -years_with_values, -first_year, -last_year,
+         -first_two_only)            # Remove helper columns
+```
+
+You can have a look at number of rows to be deleted
+
+```{r}
+
+row_to_delete = raw_df6[raw_df6$Status=="Delete", ]
+n_distinct(row_to_delete$Tree_ID)
+
+```
+
+How many Trees were censored?
+
+```{r}
+censored_trees = raw_df6[raw_df6$Status=="C", ]
+n_distinct(censored_trees$Tree_ID)
+```
+
+## More UPDATE: now delete the unwanted rows
+
+```{r}
+
+raw_df7 <- raw_df6 %>%
+  filter(Status != "Delete")
+
+```
+
+## Now add the UTM coordinates to the dataset (raw_df7)
+
+```{r}
+raw_df8 <- raw_df7 %>%
+  left_join(utm_df %>% dplyr::select(Tree_CN, X, Y), by = "Tree_CN")
+
+head(raw_df8)
+```
+
+## Create/add Origin, Basal area (BA), and Species richness to dataset
+
+```{r}
+############################
+
+raw_df9 <- raw_df8 %>%
+  # Create the 'Origin' column and convert to factor
+  mutate(
+    Origin = case_when(
+      Tree_Species %in% c("ACPL", "LADE", "BEPE", "PIAB", "QURO", "PISY") ~ "Native",
+      TRUE ~ "Exotic"
+    ) %>%
+      as.factor(),  # Convert to factor within mutate
+    
+    # Create SR based on the length of Species_Composition
+    SR = nchar(as.character(Species_Composition))%>%
+      as.factor(),  # Convert to factor,
+    
+    # Categorize SR as Mono or Multi
+    SR_cat = ifelse(SR == 1, "Mono", "Multi") %>%
+      as.factor(),  # Convert to factor
+    
+    # Map 'Year' to numeric values (nYear)
+    nYear = case_when(
+      Year == 2014 ~ 1,
+      Year == 2015 ~ 2,
+      Year == 2016 ~ 3,
+      Year == 2017 ~ 4,
+      Year == 2018 ~ 5,
+      Year == 2019 ~ 6,
+      Year == 2020 ~ 7,
+      Year == 2021 ~ 8,
+      Year == 2022 ~ 9,
+      Year == 2023 ~ 10
+    )
+  ) %>%
+  # Create Basal Area (BA) and impute missing values with median
+mutate(BA = (pi * ((Diameter / 1000) ^ 2)) / 4) %>%
+mutate(BA = ifelse(is.na(BA), median(BA, na.rm = TRUE), BA))  # Impute missing values with median
+
+```
+
+# Create/add start, stop variables
+
+Using nYear and also recode Status to change at the end of measures for an ID
+
+```{r}
+
+raw_df10 <- raw_df9 %>%
+  filter(!is.na(Height)) %>%  # Remove rows where Height is NA
+  arrange(Tree_ID, Year) %>%  # Ensure the data is sorted by Tree_ID and Year
+  group_by(Tree_ID) %>%
+  mutate(
+    start = ifelse(is.na(lag(nYear)), nYear - 1, lag(nYear)),  # Set start to the previous year
+    stop = nYear,                                           # Set stop to the current year
+    Time_1 = n(),                            # Total number of observations for each Tree_ID
+    Time_2 = row_number()                              # Sequential count of observations
+  ) %>%
+  ungroup()
+
+# Recoding the 'Status' column: Change all 'D' to 'A' except for the last occurrence
+raw_df10 <- raw_df10 %>%
+  group_by(Tree_ID) %>%
+  mutate(
+    Status = as.character(Status),  # Ensure Status is a character vector
+    Status = ifelse(row_number() != n() & Status == "D", "A", Status)
+  ) %>%
+  ungroup()
+
+# Create binary Status2 column (1 for Dead, 0 for Alive)
+raw_df10$Status2 = ifelse(raw_df10$Status == "D", 1, 0)
+
+# Check structure of the dataset
+str(raw_df10)
+#remove(raw_df,raw_df2,raw_df3, raw_df4,raw_df4b, raw_df5, raw_df6, raw_df7, 
+#       raw_df8,raw_df9)
+
+remove(raw_df,raw_df2,raw_df3, raw_df4,raw_df4b, raw_df5, raw_df6, raw_df7, 
+       raw_df8)
+```
+
+# Computing Heygi's competition index (1974)
+
+Here we use diameter as measure of size and competition radius of 1,2 and 3. 
+
+```{r}
+
+library(sf)
+library(units)
+
+# Convert the dataset into an sf object using X and Y as coordinates
+tree_sf <- st_as_sf(raw_df10, coords = c("X", "Y"), crs = 32633)
+
+# Unique years in the dataset
+years <- unique(tree_sf$Year)
+
+# Competition radii to loop over
+competition_radii <- c(1, 2, 3)
+
+# Initialize a list to store CI results for each year
+ci_results <- list()
+
+# Loop through each year and calculate CI for each radius and each tree
+for (year in years) {
+  
+  # Filter data for the current year
+  year_data <- tree_sf %>% filter(Year == year)
+  
+  # Calculate pairwise distances for the current year
+  dist_matrix <- st_distance(year_data)
+  dist_matrix <- set_units(dist_matrix, NULL)  # Remove units for easier computation
+  
+  # Loop through each competition radius
+  for (radius in competition_radii) {
+    
+    # Function to calculate CI for each tree (Heygi's Competition Index)
+    calculate_ci <- function(i, diameter, dist_matrix, radius) {
+      distances <- dist_matrix[i, ]
+      distances <- as.numeric(distances)
+      
+      # Identify neighbors within the competition radius (excluding the focal tree itself)
+      within_radius <- which(distances <= radius & distances > 0)
+      
+      # Filter out neighbors with missing heights
+      valid_neighbors <- within_radius[!is.na(diameter[within_radius])]
+      
+      if (length(valid_neighbors) == 0) {
+        return(0)  # No valid neighbors within radius
+      }
+      
+      # Get heights and distances for valid neighbors
+      diameters_within_radius <- diameter[valid_neighbors]
+      distances_within_radius <- distances[valid_neighbors]
+      
+      # Calculate the CI value for the target tree i (HCI)
+      ci_value <- sum(diameters_within_radius / (diameter[i] * distances_within_radius))
+      return(ci_value)
+    }
+    
+    # Apply CI calculation to each tree for the given radius
+    year_data[[paste0("CI_", radius)]] <- sapply(1:nrow(year_data), 
+                                                 function(i) calculate_ci(i, year_data$Diameter, 
+                                                                          dist_matrix, radius))
+  }
+  
+  # Store results for this year
+  ci_results[[as.character(year)]] <- year_data
+}
+
+# Combine the results into a single data frame
+ci_combined <- do.call(rbind, ci_results)
+
+############################################
+# Calculate the median CI for each of the CI columns
+############################################
+ci_medians <- sapply(competition_radii, function(radius) {
+  median(ci_combined[[paste0("CI_", radius)]], na.rm = TRUE)
+})
+
+############################################
+# Classify each CI column as "Dominant" or "Subordinant"
+############################################
+for (radius in competition_radii) {
+  ci_column <- paste0("CI_", radius)
+  cat_column <- paste0(ci_column, "_cat")
+  
+  ci_combined[[cat_column]] <- ifelse(ci_combined[[ci_column]] <= ci_medians[[radius]],
+                                      "Dominant", "Subordinant")
+}
+
+df_ci_combined <- as.data.frame(ci_combined)
+
+remove(tree_sf,years,competition_radii,ci_combined,ci_medians,ci_results)
+
+```
+
+## Which value of radius to use?
+
+Fit a logistic regression model
+
+```{r,echo=FALSE, warning=FALSE, message=FALSE}
+# Load necessary library
+library(pROC)
+
+# Define a function to fit models and compute AIC and AUC
+calculate_metrics <- function(data, prefix, variable_prefix) {
+  aic_values <- numeric(3)
+  auc_values <- numeric(3)
+
+  for (i in 1:3) {
+    # Construct the formula without spaces
+    formula <- as.formula(paste("Status2 ~", paste(variable_prefix, i, sep = "")))
+    model <- glm(formula, data = data, family = binomial)
+    
+    # Store AIC
+    aic_values[i] <- AIC(model)
+    
+    # Calculate predicted probabilities and AUC
+    pred_probs <- predict(model, type = "response")
+    roc_curve <- roc(data$Status2, pred_probs)
+    auc_values[i] <- auc(roc_curve)
+  }
+  
+  # Combine AIC and AUC into a data frame
+  results <- data.frame(Model = paste(prefix, 1:3, sep = "_"),
+                         AIC = aic_values,
+                         AUC = auc_values)
+  return(results)
+}
+
+# Calculate metrics for HCI models
+
+hci_metrics <- calculate_metrics(df_ci_combined, "HCI", "CI_")
+
+# Print the combined results
+print(hci_metrics)
+
+```
+
+According to the performance metrics used (AIC and AUC), the best radius values for HCI is 3.
+
+# Some exploration
+
+```{r,echo=FALSE, warning=FALSE, message=FALSE}
+raw_df11 <- df_ci_combined[, !(names(df_ci_combined) %in% c("CI_1", "CI_2",
+                                                            "CI_1_cat", "CI_2_cat"
+                                                            ))]
+
+# we can save this for now as our cleaned data
+# write.csv(raw_df11, "cleaned_data.csv")
+```
+
+## Plot the tree coordinates
+
+```{r,fig.width=10, fig.height=5, warning=FALSE, message=FALSE}
+#| fig.width: 12
+#| echo: true
+#| eval: true
+#| fig.height: 5
+#| warning: false
+#| fig-cap: UTM coordinates of tree by block and plots.
+
+library(ggplot2)
+library(patchwork)
+library(sf)
+
+
+# Convert the dataset into an sf object
+
+tree_sf <- st_as_sf(raw_df11)
+                    
+plot1 <- ggplot(data = tree_sf) +
+  geom_sf(aes(color = Block)) +
+  labs(title = "Tree Locations in UTM Coordinates (2013)",
+       color = "Block") +
+  theme_minimal()
+
+# Filter the data for Block == 1 and Plot == 1
+filtered_trees <- tree_sf %>%
+  filter(Year == 2023)
+
+# Plot the filtered tree locations as points
+plot2 <- ggplot(data = filtered_trees) +
+  geom_sf(aes(color = Block)) +
+  labs(title = "Tree Locations in UTM Coordinates (2023)") +
+  theme_minimal()
+
+# Combine the plots side by side
+plot1 + plot2
+
+remove(plot1,plot2)
+```
+
+## Competition index vs. height, by tree mortality status
+
+```{r,fig.width=10, fig.height=5,warning=FALSE, message=FALSE}
+#| fig.width: 10
+#| echo: true
+#| eval: true
+#| fig.height: 4
+#| message: false
+#| warning: false
+#| fig-cap: Plot of tree height vs competition indices by tree status (a) and competition status (b).
+library(patchwork)
+library(gridExtra)
+
+plot_data1 <- raw_df11 %>%
+  group_by(Tree_ID) %>%
+  filter(Year == max(Year)) %>%
+  ungroup()
+
+
+p1 <- ggplot(plot_data1, aes(y = Height, x = CI_3, color = as.factor(Status2))) +
+  geom_point() +
+  labs(title =  bquote(bold("(a)")),
+       y = "Tree Height (cm)", x = "CI",
+       color = "Tree Status") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_continuous(trans = 'log')  # Apply log scale to x-axis
+ # theme(legend.position = "bottom",  # Position legend at the bottom
+ #       plot.title = element_text(face = "bold"))
+
+# Customize colors for the legend
+custom_colors <- c("0" = "green", "1" = "red")
+
+p1 <- p1 + scale_color_manual(values = custom_colors)
+
+
+p2 <- ggplot(plot_data1, aes(y = Height, x = CI_3, color = CI_3_cat))  +
+  geom_point() +
+  labs(title = bquote(bold("(b)")),
+       y = "Tree Height (cm)", x = "CI",
+       color = "Competition Status:") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(face = "bold")) +
+  scale_x_continuous(trans = 'log')  # Apply log scale to x-axis
+ # theme(legend.position = "bottom",  # Position legend at the bottom
+ #       plot.title = element_text(face = "bold"))
+
+
+grid.arrange(p1,p2, nrow = 1)
+remove(p1,p2)
+```
+
+## Mono vs Multi settings of species richness
+
+```{r,fig.width=10, fig.height=8, warning=FALSE, message=FALSE}
+# Mono vs Multi settings
+
+ggplot(data=raw_df11, aes(x = factor(Year), y = Height, fill=Origin)) + 
+  geom_boxplot() +
+  facet_grid(SR_cat ~ CI_3_cat) +
+  labs(title = "Tree Height Over Years: Mono vs settings Multi settings of species richness",
+       x = "Year",
+       y = "Height (cm)",
+       color = "Origin") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+```
