@@ -57,14 +57,10 @@ library(readxl)
 library(dplyr)
 library(readr)
 
-file_path1 <- "IDENT_2014-2022_sent.xlsx"   # 2014-2022 data
-file_path2 <-"Aufnahmebögen_IDENT_2024_Block1-4_Dateneingabe_final - sent.xlsx"   # 2023 data
+file_path1 <- "IDENT_2014-2025.xlsx"   # 2014-2025 data
+df_2014_2025 <- read_excel(file_path1, sheet = 2, na = c("", "NA", "-"))
+head(df_2014_2025)
 
-df_2014_2022 <- read_excel(file_path1, sheet = 2, na = c("", "NA", "-"))
-df_2023 <- read_excel(file_path2, sheet = 2, na = c("", "NA", "-"))
-
-head(df_2014_2022)
-head(df_2023)
 ```
 
 
@@ -76,82 +72,14 @@ utm_df <- read_excel("IDENT_treeCoords_UTM2.xlsx")
 ```
 
 
-
-# Create a unique identifier "Tree_CN" needed to merge both dataframes
-
-The merged dataframe is our starting raw data.
-
-```{r}
-df_2023$Tree <- gsub("\\.", ",", df_2023$Tree) # replace "." with ","
-df_2023$Tree_CN <- paste("I", df_2023$Block, df_2023$Plot, df_2023$Tree, sep = ",")
-
-
-# Rename some columns to match what we had in 2014-2022 data
-df_2023 <- df_2023 %>%
-  rename(Diameter_1 = D1, Diameter_2 = D2,Diameter_3 = D3,
-         Height_1 = H1, Height_2 = H2, Height_3 = H3,
-         Comments = Comment,
-         Tree_Species = Species)
-
-######################
-# add columns DBH1, DBH2 and DBH3 from df_2023 to df_2014_2022
-df1 <- df_2014_2022 %>%
-  left_join(df_2023 %>%
-              dplyr::select(Tree_CN, DBH1, DBH2, DBH3), 
-            by = "Tree_CN")
-df1$DBH1 <- NA
-df1$DBH2 <- NA
-df1$DBH3 <- NA
-
-# also add missign columns in df_2023 from df_2014_2022
-df2 <- df_2023 %>%
-  left_join(df_2014_2022 %>%
-              dplyr::select(Tree_CN, Plot_CN, X_Pos, Y_Pos, Fertilizer, Species_Composition), 
-            by = "Tree_CN") %>%
-  distinct(Tree_CN, .keep_all = TRUE)
-
-
-# Combine df1 and df2a
-merged_df <- rbind(df1, df2)
-
-
-raw_df <- merged_df %>%
-  # Convert all character columns to factors
-  mutate(across(where(is.character), as.factor)) %>%
-  
-  # Explicitly ensure that 'Plot' and 'Block' are factors
-  mutate(
-    Plot = as.factor(Plot),
-    Block = as.factor(Block),
-    DBH1 = as.numeric(DBH1)
-    )
-  
-
-str(raw_df)
-
-```
-
-
 # Data cleaning
-
-## keep inner 5by5 of the plots
-
-By removing rows where X = 1 or X = 7, and Y = 1 or Y = 7.
-
-```{r}
-
-raw_df2 <- raw_df %>%
-  filter(!(X_Pos %in% c(1, 7) | Y_Pos %in% c(1, 7)))
-
-
-```
 
 ## Create a simpler unique ID for each Tree using Tree_CN
 
 Sort by Plot, Tree_CN, and Year and generate Tree_ID as a factor using match() and unique() functions.
 
 ```{r}
-raw_df3 <- raw_df2 %>%
+raw_df <- df_2014_2025 %>%
   arrange(Plot, Tree_CN, Year) %>%  # Sort 
   mutate(Tree_ID = as.factor(match(Tree_CN, unique(Tree_CN))))  # Generate Tree_ID 
 
@@ -162,7 +90,7 @@ Total number of unique Tree_IDs
 
 ```{r}
 
-n_distinct(raw_df3$Tree_ID)
+n_distinct(raw_df$Tree_ID)
 
 ```
 
@@ -173,7 +101,7 @@ Correct for record error due to height1 and height2 swaps during measurement.
 ```{r}
 
 ####################################
-raw_df4 <- raw_df3 %>%
+raw_df2 <- raw_df %>%
   # Group by Tree_ID to apply changes within each group
   group_by(Tree_ID) %>%
   mutate(
@@ -185,7 +113,6 @@ raw_df4 <- raw_df3 %>%
                       Diameter_1),
     
   ) %>%
-  # Remove grouping
   ungroup() %>%
   # Unselect columns like Height_1, Height_2, Diameter_1, etc.
   dplyr::select(-Height_1, -Height_2, -Height_3, -Diameter_1, -Diameter_2, -Diameter_3,
@@ -196,28 +123,30 @@ raw_df4 <- raw_df3 %>%
 
 ## Predict Height measures for Trees where only Diameter was available
 
-Especially for 2023.
+Especially from Year=2023 onward.
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 
-raw_df4a <- raw_df4
+raw_df3a <- raw_df2
+raw_df3a$Height <- as.numeric(raw_df3a$Height)
+raw_df3a$Diameter <- as.numeric(raw_df3a$Diameter)
 
 # Use only rows where Height is NOT NA (Diameter can be NA)
-model_data <- raw_df4a[!is.na(raw_df4a$Height), ]
+model_data <- raw_df3a[!is.na(raw_df3a$Height), ]
 
 # Fit a linear model (Height ~ Diameter)
 hei_fit <- lm(Height ~ Diameter, data = model_data)
 summary(hei_fit)  # Check model output
 
 # Select rows where Height is missing but Diameter is available for prediction
-diam_rows <- raw_df4a[is.na(raw_df4a$Height) & !is.na(raw_df4a$Diameter), ]
+diam_rows <- raw_df3a[is.na(raw_df3a$Height) & !is.na(raw_df3a$Diameter), ]
 
 # Fill NAs with Predicted missing Height using the model
-raw_df4a$Height[is.na(raw_df4a$Height) & !is.na(raw_df4a$Diameter)] <- predict(hei_fit, newdata=diam_rows)
+raw_df3a$Height[is.na(raw_df3a$Height) & !is.na(raw_df3a$Diameter)] <- predict(hei_fit, newdata=diam_rows)
 
 # Check if NAs are replaced
-sum(is.na(raw_df4$Height)) # NAs not replaced here
-sum(is.na(raw_df4a$Height))  # Should be less than before
+sum(is.na(raw_df2$Height)) # NAs not replaced here
+sum(is.na(raw_df3a$Height))  # Should be less than before
 
 ```
 
@@ -225,29 +154,28 @@ sum(is.na(raw_df4a$Height))  # Should be less than before
 
 To estimate their corresponding Diameter.
 
-```{r}
-
+```{r, warning=FALSE, message=FALSE}
 
 #####################################################
 
-raw_df4b <- raw_df4a
+raw_df3b <- raw_df3a
 
 # Use only rows where Diameter is NOT NA (Height can be NA)
-model_data <- raw_df4b[!is.na(raw_df4b$Diameter), ]
+model_data <- raw_df3b[!is.na(raw_df3b$Diameter), ]
 
 # Fit a linear model 
 dia_fit <- lm(Diameter ~ Height, data = model_data)
 summary(dia_fit)  # Check model output
 
 # Select rows where Diameter is missing but Height is available
-hei_rows <- raw_df4b[is.na(raw_df4b$Diameter) & !is.na(raw_df4b$Height), ]
+hei_rows <- raw_df3b[is.na(raw_df3b$Diameter) & !is.na(raw_df3b$Height), ]
 
 # Predict missing Diameter using the model
-raw_df4b$Diameter[is.na(raw_df4b$Diameter) & !is.na(raw_df4b$Height)] <- predict(dia_fit, newdata=hei_rows)
+raw_df3b$Diameter[is.na(raw_df3b$Diameter) & !is.na(raw_df3b$Height)] <- predict(dia_fit, newdata=hei_rows)
 
 # Check if NAs are replaced
-sum(is.na(raw_df4a$Diameter)) # NAs not replaced here
-sum(is.na(raw_df4b$Diameter))  # Should be less than before
+sum(is.na(raw_df3a$Diameter)) # NAs not replaced here
+sum(is.na(raw_df3b$Diameter))  # Should be less than before
 
 ```
 
@@ -255,9 +183,9 @@ sum(is.na(raw_df4b$Diameter))  # Should be less than before
 
 Replace "NA" with average of previous and next values if available.
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 
-raw_df4c <- raw_df4b %>%
+raw_df3c <- raw_df3b %>%
   # Group by Tree_ID to apply changes within each group
   group_by(Tree_ID) %>%
   mutate(
@@ -276,13 +204,13 @@ raw_df4c <- raw_df4b %>%
   # Remove grouping
   ungroup()     
 
-sum(is.na(raw_df4b$Height)) # NAs not replaced here
-sum(is.na(raw_df4c$Height))  # Should be less than before
+sum(is.na(raw_df3b$Height)) # NAs not replaced here
+sum(is.na(raw_df3c$Height))  # Should be less than before
 ```
 
 ## Function to replace values after consecutive NAs with NA
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 
 # Replace values that followed two or more consecutive 
 update_na_values <- function(group) {
@@ -326,17 +254,17 @@ update_na_values <- function(group) {
 }
 
 # Apply function to each group of Tree_ID
-raw_df5 <- raw_df4c %>%
+raw_df4 <- raw_df3c %>%
   group_by(Tree_ID) %>%
   group_modify(~ update_na_values(.x)) %>%
   ungroup()
 
 ```
 
-## Create "Status" column using the following conditions:
+## Assign status
+Create "Status" column using the following conditions:
 
 If for a tree:
-
 1.  Only first 2 years have values \~ "D"
 2.  Only first year has value \~ "C"
 3.  Only second, third, or fourth year has a value \~ "Delete"
@@ -344,50 +272,63 @@ If for a tree:
 5.  Maximum year is NA \~ "D"
 6.  Maximum year has values \~ "A"
 
-```{r}
 
+```{r, warning=FALSE, message=FALSE}
 library(dplyr)
 
-raw_df6 <- raw_df5 %>%
-  arrange(Tree_ID, Year) %>%
+  
+  # Assign Status
+raw_df5 <- raw_df4 %>%
   group_by(Tree_ID) %>%
+  arrange(Year, .by_group = TRUE)%>%
   mutate(
-    # Count non-NA values for each ID
-  non_na_count = sum(!is.na(Height)),
+    # Count non-NA values
+    non_na_count = sum(!is.na(Height)),
     
-    # Find years where measurements exist (store as a list)
-  years_with_values = list(Year[!is.na(Height)]),
+    # Years with values
+    years_with_values = list(Year[!is.na(Height)]),
     
-    # Identify first and last years with measurements safely
-  first_year = ifelse(length(years_with_values[[1]]) > 0, min(years_with_values[[1]], na.rm = TRUE), NA),
-  last_year = ifelse(length(years_with_values[[1]]) > 0, max(years_with_values[[1]], na.rm = TRUE), NA),
+    # First and last year with measurements
+    first_year = ifelse(length(years_with_values[[1]]) > 0,
+                        min(years_with_values[[1]], na.rm = TRUE), NA),
+    last_year = ifelse(length(years_with_values[[1]]) > 0,
+                       max(years_with_values[[1]], na.rm = TRUE), NA),
     
-    # Identify if only the first two years (2014, 2015) have data
-  first_two_only = length(years_with_values[[1]]) == 2 && all(years_with_values[[1]] %in% c(2014, 2015)),
+    # Only first two years (2014, 2015)
+    first_two_only = length(years_with_values[[1]]) == 2 &&
+                     all(years_with_values[[1]] %in% c(2014, 2015)),
     
-    
-    # Assign Status based on conditions **without creating extra columns**
-  Status = case_when(
-    non_na_count == 0 ~ "Delete",  # All values are NA
-    non_na_count == 1 & first_year %in% c(2015, 2016, 2017, 2018) ~ "Delete",  # Only 2/3/4th year
-    non_na_count == 1 & first_year == 2014 ~ "C",                         # Only 1st year has value
-    first_two_only ~ "D",                           # Only first two years (2014, 2015) have values
-    last_year == 2023 ~ "A",                               # If last year has values, Status is "A"
-    last_year < 2023 ~ "D",          # If max year is NA or missing data before 2023, Status is "D"
-    TRUE ~ NA_character_             # Default case
-    )  %>%
-      as.factor()                    # Convert to factor within mutate
+    # Assign Status
+    Status = case_when(
+      non_na_count == 0 ~ "Delete",
+      non_na_count == 1 & first_year %in% c(2015, 2016, 2017, 2018) ~ "Delete",
+      non_na_count == 1 & first_year == 2014 ~ "C",
+      first_two_only ~ "D",
+      last_year == 2025 ~ "A",
+      last_year < 2025 ~ "D",
+      TRUE ~ NA_character_
+    ) %>%
+      as.factor()
   ) %>%
   ungroup() %>%
-  dplyr::select(-non_na_count, -years_with_values, -first_year, -last_year,
-         -first_two_only)            # Remove helper columns
+  
+  # Remove helper columns
+  select(-non_na_count, -years_with_values, -first_year, -last_year, -first_two_only)
+
+table(complete.cases(raw_df5))  # FALSE:34344,  TRUE: 79781 
+
+check = raw_df5 %>%
+  filter(Plot == 177, Year >= 2022)
+check[, c(11:14)]
 ```
+
+
 
 You can have a look at number of rows to be deleted
 
 ```{r}
 
-row_to_delete = raw_df6[raw_df6$Status=="Delete", ]
+row_to_delete = raw_df5[raw_df5$Status=="Delete", ]
 n_distinct(row_to_delete$Tree_ID)
 
 ```
@@ -395,7 +336,7 @@ n_distinct(row_to_delete$Tree_ID)
 How many Trees were censored?
 
 ```{r}
-censored_trees = raw_df6[raw_df6$Status=="C", ]
+censored_trees = raw_df5[raw_df5$Status=="C", ]
 n_distinct(censored_trees$Tree_ID)
 ```
 
@@ -403,7 +344,7 @@ n_distinct(censored_trees$Tree_ID)
 
 ```{r}
 
-raw_df7 <- raw_df6 %>%
+raw_df6 <- raw_df5 %>%
   filter(Status != "Delete")
 
 ```
@@ -411,18 +352,18 @@ raw_df7 <- raw_df6 %>%
 ## Now add the UTM coordinates to the dataset (raw_df7)
 
 ```{r}
-raw_df8 <- raw_df7 %>%
+raw_df7 <- raw_df6 %>%
   left_join(utm_df %>% dplyr::select(Tree_CN, X, Y), by = "Tree_CN")
 
-head(raw_df8)
+head(raw_df7)
 ```
 
-## Create/add Origin, Basal area (BA), and Species richness to dataset
+## Create/add Origin, Basal area (BA), and Species richness and Leaftype to dataset
 
 ```{r}
 ############################
 
-raw_df9 <- raw_df8 %>%
+raw_df8 <- raw_df7 %>%
   # Create the 'Origin' column and convert to factor
   mutate(
     Origin = case_when(
@@ -430,6 +371,11 @@ raw_df9 <- raw_df8 %>%
       TRUE ~ "Exotic"
     ) %>%
       as.factor(),  # Convert to factor within mutate
+    
+     Leaftype = case_when(
+      Tree_Species %in% c("ACPL", "ACSA", "BEPE", "BEPA", "QURO", "QURU") ~ "Broad",
+      TRUE ~ "Needle"
+    ) %>% as.factor(),
     
     # Create SR based on the length of Species_Composition
     SR = nchar(as.character(Species_Composition))%>%
@@ -450,12 +396,15 @@ raw_df9 <- raw_df8 %>%
       Year == 2020 ~ 7,
       Year == 2021 ~ 8,
       Year == 2022 ~ 9,
-      Year == 2023 ~ 10
+      Year == 2023 ~ 10,
+      Year == 2024 ~ 11,
+      Year == 2025 ~ 12
     )
   ) %>%
-  # Create Basal Area (BA) and impute missing values with median
-mutate(BA = (pi * ((Diameter / 1000) ^ 2)) / 4) %>%
+  # Create Basal Area (BA) in m^2 and impute missing values with median
+mutate(BA = pi * (Diameter / 20)^2 / 10000) %>%
 mutate(BA = ifelse(is.na(BA), median(BA, na.rm = TRUE), BA))  # Impute missing values with median
+
 
 ```
 
@@ -465,7 +414,7 @@ Using nYear and also recode Status to change at the end of measures for an ID
 
 ```{r}
 
-raw_df10 <- raw_df9 %>%
+raw_df9 <- raw_df8 %>%
   filter(!is.na(Height)) %>%  # Remove rows where Height is NA
   arrange(Tree_ID, Year) %>%  # Ensure the data is sorted by Tree_ID and Year
   group_by(Tree_ID) %>%
@@ -478,7 +427,7 @@ raw_df10 <- raw_df9 %>%
   ungroup()
 
 # Recoding the 'Status' column: Change all 'D' to 'A' except for the last occurrence
-raw_df10 <- raw_df10 %>%
+raw_df9 <- raw_df9 %>%
   group_by(Tree_ID) %>%
   mutate(
     Status = as.character(Status),  # Ensure Status is a character vector
@@ -487,14 +436,12 @@ raw_df10 <- raw_df10 %>%
   ungroup()
 
 # Create binary Status2 column (1 for Dead, 0 for Alive)
-raw_df10$Status2 = ifelse(raw_df10$Status == "D", 1, 0)
+raw_df9$Status2 = ifelse(raw_df9$Status == "D", 1, 0)
 
 # Check structure of the dataset
-str(raw_df10)
-#remove(raw_df,raw_df2,raw_df3, raw_df4,raw_df4b, raw_df5, raw_df6, raw_df7, 
-#       raw_df8,raw_df9)
+str(raw_df9)
 
-remove(raw_df,raw_df2,raw_df3, raw_df4,raw_df4b, raw_df5, raw_df6, raw_df7, 
+remove(raw_df,raw_df2,raw_df3a,raw_df3b, raw_df4,raw_df3c,raw_df5, raw_df6, raw_df7, 
        raw_df8)
 ```
 
@@ -502,13 +449,13 @@ remove(raw_df,raw_df2,raw_df3, raw_df4,raw_df4b, raw_df5, raw_df6, raw_df7,
 
 Here we use diameter as measure of size and competition radius of 1,2 and 3. 
 
-```{r}
+```{r, message=FALSE, warning=FALSE}
 
 library(sf)
 library(units)
 
 # Convert the dataset into an sf object using X and Y as coordinates
-tree_sf <- st_as_sf(raw_df10, coords = c("X", "Y"), crs = 32633)
+tree_sf <- st_as_sf(raw_df9, coords = c("X", "Y"), crs = 32633)
 
 # Unique years in the dataset
 years <- unique(tree_sf$Year)
@@ -641,12 +588,12 @@ According to the performance metrics used (AIC and AUC), the best radius values 
 # Some exploration
 
 ```{r,echo=FALSE, warning=FALSE, message=FALSE}
-raw_df11 <- df_ci_combined[, !(names(df_ci_combined) %in% c("CI_1", "CI_2",
-                                                            "CI_1_cat", "CI_2_cat"
+raw_df10 <- df_ci_combined[, !(names(df_ci_combined) %in% c("CI_1", 
+                                                            "CI_1_cat"
                                                             ))]
 
 # we can save this for now as our cleaned data
-# write.csv(raw_df11, "cleaned_data.csv")
+# write.csv(raw_df10, "cleaned_data.csv")
 ```
 
 ## Plot the tree coordinates
@@ -666,7 +613,7 @@ library(sf)
 
 # Convert the dataset into an sf object
 
-tree_sf <- st_as_sf(raw_df11)
+tree_sf <- st_as_sf(raw_df10)
                     
 plot1 <- ggplot(data = tree_sf) +
   geom_sf(aes(color = Block)) +
@@ -676,12 +623,12 @@ plot1 <- ggplot(data = tree_sf) +
 
 # Filter the data for Block == 1 and Plot == 1
 filtered_trees <- tree_sf %>%
-  filter(Year == 2023)
+  filter(Year == 2025)
 
 # Plot the filtered tree locations as points
 plot2 <- ggplot(data = filtered_trees) +
   geom_sf(aes(color = Block)) +
-  labs(title = "Tree Locations in UTM Coordinates (2023)") +
+  labs(title = "Tree Locations in UTM Coordinates (2025)") +
   theme_minimal()
 
 # Combine the plots side by side
@@ -703,7 +650,7 @@ remove(plot1,plot2)
 library(patchwork)
 library(gridExtra)
 
-plot_data1 <- raw_df11 %>%
+plot_data1 <- raw_df10 %>%
   group_by(Tree_ID) %>%
   filter(Year == max(Year)) %>%
   ungroup()
@@ -745,7 +692,7 @@ remove(p1,p2)
 ```{r,fig.width=10, fig.height=8, warning=FALSE, message=FALSE}
 # Mono vs Multi settings
 
-ggplot(data=raw_df11, aes(x = factor(Year), y = Height, fill=Origin)) + 
+ggplot(data=raw_df10, aes(x = factor(Year), y = Height, fill=Origin)) + 
   geom_boxplot() +
   facet_grid(SR_cat ~ CI_3_cat) +
   labs(title = "Tree Height Over Years: Mono vs settings Multi settings of species richness",
