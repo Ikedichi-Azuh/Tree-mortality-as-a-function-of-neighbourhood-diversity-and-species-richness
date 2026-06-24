@@ -598,7 +598,7 @@ raw_df10 <- df_ci_combined[, !(names(df_ci_combined) %in% c("CI_1",
 
 ## Plot the tree coordinates
 
-```{r,fig.width=10, fig.height=5, warning=FALSE, message=FALSE}
+```{r}
 #| fig.width: 12
 #| echo: true
 #| eval: true
@@ -639,7 +639,7 @@ remove(plot1,plot2)
 
 ## Competition index vs. height, by tree mortality status
 
-```{r,fig.width=10, fig.height=5,warning=FALSE, message=FALSE}
+```{r}
 #| fig.width: 10
 #| echo: true
 #| eval: true
@@ -658,13 +658,19 @@ plot_data1 <- raw_df10 %>%
 
 p1 <- ggplot(plot_data1, aes(y = Height, x = CI_3, color = as.factor(Status2))) +
   geom_point() +
-  labs(title =  bquote(bold("(a)")),
-       y = "Tree Height (cm)", x = "CI",
+  labs(title = bquote(bold("(a)")),
+       y = "Tree Height (cm)",
+       x = "CI",
        color = "Tree Status") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  scale_x_continuous(trans = 'log')  # Apply log scale to x-axis
- # theme(legend.position = "bottom",  # Position legend at the bottom
- #       plot.title = element_text(face = "bold"))
+     scale_x_log10(
+    breaks = c(1, 5, 10, 50, 100, 500)
+  ) +
+  scale_y_log10(
+    limits = c(1, 2000),
+    breaks = c(5, 10, 50, 100, 500, 1000, 2000)
+  ) 
+
 
 # Customize colors for the legend
 custom_colors <- c("0" = "green", "1" = "red")
@@ -678,27 +684,33 @@ p2 <- ggplot(plot_data1, aes(y = Height, x = CI_3, color = CI_3_cat))  +
        y = "Tree Height (cm)", x = "CI",
        color = "Competition Status:") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(face = "bold")) +
-  scale_x_continuous(trans = 'log')  # Apply log scale to x-axis
- # theme(legend.position = "bottom",  # Position legend at the bottom
- #       plot.title = element_text(face = "bold"))
+  scale_x_log10(
+    breaks = c(1, 5, 10, 50, 100, 500)
+  ) +
+  scale_y_log10(
+    limits = c(1, 2000),
+    breaks = c(5, 10, 50, 100, 500, 1000, 2000)
+  ) 
 
 
 grid.arrange(p1,p2, nrow = 1)
 remove(p1,p2)
 ```
 
-## Mono vs Multi settings of species richness
+## Tree height by competition index, origin and species richness
 
 ```{r,fig.width=10, fig.height=8, warning=FALSE, message=FALSE}
 # Mono vs Multi settings
 
 ggplot(data=raw_df10, aes(x = factor(Year), y = Height, fill=Origin)) + 
   geom_boxplot() +
-  facet_grid(SR_cat ~ CI_3_cat) +
-  labs(title = "Tree Height Over Years: Mono vs settings Multi settings of species richness",
-       x = "Year",
-       y = "Height (cm)",
-       color = "Origin") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+  facet_grid(SR ~ CI_3_cat) +
+  labs(
+    title = "Tree height over years: by competition index, origin and species richness",
+    x = "Year",
+    y = "Height (cm)"
+  ) +
+  coord_cartesian(ylim = c(0, 1800)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 ```
